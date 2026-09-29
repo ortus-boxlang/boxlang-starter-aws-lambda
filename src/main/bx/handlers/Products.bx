@@ -1,0 +1,22 @@
+/**
+ * Products handler
+ *
+ * Registered by convention at build time (see the generateManifest Gradle task) as
+ * the "products" route: any request whose first URI path segment is "products"
+ * (case-insensitive) is routed here instead of the default Lambda.bx.
+ *
+ * Only files under handlers/ are ever eligible routing targets - Application.bx,
+ * Lambda.bx, and any other file outside this directory can never be reached this
+ * way, no matter what a client requests.
+ */
+class{
+
+	function run( event, context, response ){
+		response.body = {
+			"error": false,
+			"message": "Hello from the Products handler",
+			"data": "====> Incoming event " & event.toString()
+		}
+		response.statusCode = 200
+	}
+}

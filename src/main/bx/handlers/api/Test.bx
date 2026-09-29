@@ -1,0 +1,18 @@
+/**
+ * Test handler, nested under handlers/api/
+ *
+ * Directory segments can be any case you like - only the leaf .bx filename needs
+ * to be PascalCase, by convention. This file registers as the "api/test" route,
+ * matching requests to /api/test regardless of the case used in the URL or the
+ * folder name on disk.
+ */
+class{
+
+	function run( event, context, response ){
+		response.body = {
+			"error": false,
+			"message": "Hello from the nested api/test handler"
+		}
+		response.statusCode = 200
+	}
+}
