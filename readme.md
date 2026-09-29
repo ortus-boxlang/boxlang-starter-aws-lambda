@@ -282,6 +282,8 @@ Here is a comprehensive overview of the project structure:
   - `bx/` - BoxLang source files
     - `Application.bx` - Application lifecycle hooks and configuration
     - `Lambda.bx` - **Your Lambda entry point** (implements `run(event, context, response)`)
+    - `handlers/` - **Routed handlers** - see [URI Routing with handlers/](#-uri-routing-with-handlers) below
+    - `manifest.json` - **Generated** (gitignored) by `./gradlew generateManifest` from `handlers/`; do not edit by hand
     - _(Add your BoxLang classes here)_
 - 🧪 **`test/`** - Test source code
   - `java/com/myproject/` - JUnit test classes
@@ -355,6 +357,44 @@ class {
   - `headers` - HTTP headers map/struct
   - `body` - Response payload (your data goes here)
   - `cookies` - Array of response cookies
+
+### 🧭 URI Routing with `handlers/`
+
+Every request goes to `Lambda.bx` by default. To route requests to a different
+class based on the URL path, add it under `src/main/bx/handlers/` instead of the
+project root:
+
+```java
+// src/main/bx/handlers/Products.bx
+class {
+    function run( event, context, response ) {
+        response.body = { "message": "Hello from Products" }
+        response.statusCode = 200
+    }
+}
+```
+
+A request to `/products` now runs `handlers/Products.bx` instead of `Lambda.bx`.
+Folders can be nested and use any case you like - only the leaf `.bx` filename
+needs to be PascalCase - so `handlers/api/Test.bx` handles `/api/test`.
+
+**Only files under `handlers/` are ever routable.** `Application.bx`, `Lambda.bx`,
+and anything else at the project root can never be reached this way, no matter
+what path or `x-bx-function` header a client sends - the routing table is a
+build-time allowlist (`manifest.json`, generated from `handlers/` by
+`./gradlew generateManifest`, wired automatically into `runLocal`, `test`, and
+`buildLambdaZip`), not a live filesystem scan. A request to a route that isn't
+registered just runs `Lambda.bx`, same as no routing had happened at all.
+
+As with `Lambda.bx`, the `x-bx-function` header can call an alternative method on
+a handler - only ever a method you declared, since BoxLang's public/remote scope
+rules are exactly what gates it: don't make a method public if you don't want it
+externally callable.
+
+If `handlers/manifest.json` is ever missing or invalid, the runtime falls back to
+scanning `handlers/` directly at cold start and logs a `WARNING` listing every
+handler it registered - check your Lambda logs if routing behaves unexpectedly
+after a deploy that skipped `generateManifest`.
 
 ### 🔧 Application Lifecycle
 
@@ -510,6 +550,7 @@ build/distributions/your-lambda.zip
 | 🧪 `compileTestJava` | Compile Java test files | `build/classes/java/test/` |
 | 📊 `dependencyUpdates` | Check for newer dependency versions | Console report |
 | 🔗 `shadowJar` | Create uber-JAR with all dependencies | `build/distributions/` |
+| 🧭 `generateManifest` | Scan `handlers/` and (re)generate `manifest.json` | `src/main/bx/manifest.json` |
 | 🎁 `buildLambdaZip` | Package Lambda deployment ZIP | `build/distributions/*.zip` |
 | 📄 `jar` | Create standard JAR (without dependencies) | `build/libs/` |
 | 📚 `javadoc` | Generate Java API documentation | `build/docs/javadoc/` |

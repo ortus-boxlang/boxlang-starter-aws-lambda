@@ -63,6 +63,7 @@ compileTestJava {
 }
 
 test {
+	dependsOn 'generateManifest'
     useJUnitPlatform()
     testLogging {
 		showStandardStreams = true
@@ -81,9 +82,70 @@ shadowJar {
 }
 
 /**
+ * Generate manifest.json from src/main/bx/handlers/ so the runtime never has to
+ * scan the filesystem for routable handlers at cold start - it just reads this
+ * file. Regenerated automatically before packaging and before every local run,
+ * so it can never silently drift from what's actually in handlers/.
+ *
+ * Directory segments become route-key segments as-is, lowercased; only the leaf
+ * .bx filename is expected to be PascalCase. handlers/api/Test.bx -> "api/test".
+ */
+task generateManifest {
+	description = 'Generates manifest.json from src/main/bx/handlers/'
+
+	def handlersDir	= file( 'src/main/bx/handlers' )
+	def outputFile		= file( 'src/main/bx/manifest.json' )
+
+	inputs.files( fileTree( handlersDir ) { include '**/*.bx' } ).skipWhenEmpty( false )
+	outputs.file( outputFile )
+
+	doLast {
+		def handlers = [:]
+
+		def scan
+		scan = { File dir, String prefix ->
+			dir.eachFile { entry ->
+				if ( entry.isDirectory() ) {
+					def subPrefix = prefix ? "${prefix}/${entry.name.toLowerCase()}" : entry.name.toLowerCase()
+					scan( entry, subPrefix )
+				} else if ( entry.name.toLowerCase().endsWith( '.bx' ) ) {
+					def fileKey		= entry.name[ 0..-4 ].toLowerCase()
+					def routeKey	= prefix ? "${prefix}/${fileKey}" : fileKey
+					def relative	= handlersDir.toPath().relativize( entry.toPath() ).toString().replace( File.separator, '/' )
+					handlers[ routeKey ] = relative
+				}
+			}
+		}
+
+		if ( handlersDir.exists() ) {
+			scan( handlersDir, '' )
+		}
+
+		def handlersJson = handlers.collect { key, path ->
+			"\t\t\"${key}\": { \"file\": \"handlers/${path}\" }"
+		}.join( ",\n" )
+
+		outputFile.parentFile.mkdirs()
+		outputFile.text = """{
+	"manifestVersion": 1,
+	"generatedAt": "${java.time.Instant.now()}",
+	"generator": "boxlang-starter-aws-lambda-gradle",
+	"defaultHandler": { "file": "Lambda.bx", "method": "run" },
+	"handlers": {
+${handlersJson}
+	},
+	"reserved": ["Application.bx", "Lambda.bx"]
+}
+"""
+		println "📋 Generated manifest.json with ${handlers.size()} handler(s): ${handlers.keySet()}"
+	}
+}
+
+/**
  * Build the Lambda zip file for deployment on AWS
  */
 task buildLambdaZip( type: Zip ) {
+	dependsOn generateManifest
 	archiveFileName = "${project.name}-${version}.zip"
 
 	// Add Lambda.bx to the root of the ZIP
@@ -192,7 +254,7 @@ task bumpPatchVersion {
  * worbench/sampleEvents/event-local.json
  */
 task runLocal( type: JavaExec ) {
-	dependsOn compileTestJava
+	dependsOn compileTestJava, generateManifest
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'com.myproject.runner.LocalLambdaRunner'
 
@@ -215,7 +277,7 @@ task runLocal( type: JavaExec ) {
  * Run Lambda locally with API Gateway event
  */
 task runLocalApi( type: JavaExec ) {
-	dependsOn compileTestJava
+	dependsOn compileTestJava, generateManifest
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'com.myproject.runner.LocalLambdaRunner'
 	systemProperty 'eventFile', 'workbench/sampleEvents/api.json'
@@ -233,7 +295,7 @@ task runLocalApi( type: JavaExec ) {
  * Run Lambda locally with legacy API Gateway event
  */
 task runLocalLegacy( type: JavaExec ) {
-	dependsOn compileTestJava
+	dependsOn compileTestJava, generateManifest
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'com.myproject.runner.LocalLambdaRunner'
 	systemProperty 'eventFile', 'workbench/sampleEvents/event.json'
