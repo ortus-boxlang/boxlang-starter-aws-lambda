@@ -1,7 +1,7 @@
 plugins {
     id 'java'
 	// For source code formatting
-	id "com.diffplug.spotless" version "8.2.1"
+	id "com.diffplug.spotless" version "8.8.0"
     // Download task
     id "de.undercouch.download" version "5.7.0"
 	// Shadow
