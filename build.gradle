@@ -32,7 +32,7 @@ dependencies {
 	implementation 'io.boxlang:boxlang-aws-lambda:' + boxlangVersion
 
     // Use only one SLF4J implementation to avoid warnings
-	testImplementation( 'org.slf4j:slf4j-nop:2.0.17' ) {
+	testImplementation( 'org.slf4j:slf4j-nop:2.0.18' ) {
 		// Exclude to avoid conflicts with BoxLang's SLF4J binding
 		exclude group: 'org.slf4j', module: 'slf4j-api'
 	}
