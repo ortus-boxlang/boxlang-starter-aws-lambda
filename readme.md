@@ -22,6 +22,15 @@ This is the starter template for building **BoxLang serverless applications on A
 
 > 💡 This template is intentionally structured the same way as our [Google Cloud Functions](https://github.com/ortus-boxlang/boxlang-starter-google-functions) and [Azure Functions](https://github.com/ortus-boxlang/boxlang-starter-azure-functions) starter templates. Your `.bx` handler code can move between all three providers unmodified - only the deployment step differs.
 
+## 📦 What This Starter Includes
+
+- The BoxLang AWS Lambda runtime, pre-wired as your Lambda handler
+- Convention-based `handlers/` routing, backed by a build-time `manifest.json`
+- A Gradle build with a shaded JAR, `buildLambdaZip` packaging, and SAM CLI integration for local HTTP testing
+- JUnit integration tests that exercise the full request pipeline with mock AWS Context objects
+- Ready-to-use GitHub Actions workflows for test, snapshot, and release builds
+- Deployment automation via `workbench/*.sh` and a parameterized SAM template
+
 ## 📋 Prerequisites
 
 - **Java 21+**
@@ -47,11 +56,14 @@ This is the starter template for building **BoxLang serverless applications on A
 │   │   └── boxlang_modules/        # Local BoxLang modules (auto-packaged)
 │   └── test/
 │       └── java/com/myproject/     # JUnit integration tests + mocks
-└── workbench/
-    ├── config.env                  # Default deployment config (copy to config.local.env)
-    ├── template.yml                # SAM template used by 2-deploy.sh
-    ├── sampleEvents/                # Sample Lambda event payloads for local testing
-    └── *.sh                        # Deployment scripts (see AWS Deployment below)
+├── workbench/
+│   ├── config.env                  # Default deployment config (copy to config.local.env)
+│   ├── template.yml                # SAM template used by 2-deploy.sh
+│   ├── sampleEvents/               # Sample Lambda event payloads for local testing
+│   └── *.sh                        # Deployment scripts (see AWS Deployment below)
+├── .github/workflows/              # Test, snapshot, and release CI/CD pipelines
+├── box.json                        # BoxLang module dependencies
+└── gradle.properties               # version, jdkVersion, boxlangVersion
 ```
 
 ## 🧭 URI Routing with `handlers/`
@@ -76,7 +88,7 @@ class {
 }
 ```
 
-`./gradlew generateManifest` scans `handlers/` and writes `src/main/bx/manifest.json` - it's wired via `dependsOn` into `test`, `runLocal`, and `buildLambdaZip`, so it's always regenerated fresh and can never silently drift. `manifest.json` is gitignored, never hand-edited or committed.
+`./gradlew generateManifest` scans `handlers/` and writes `src/main/bx/manifest.json` - it's wired via `dependsOn` into `test`, `runLocal`, `runLocalApi`, `runLocalLegacy`, and `buildLambdaZip`, so it's always regenerated fresh and can never silently drift. `manifest.json` is gitignored, never hand-edited or committed.
 
 If `manifest.json` is ever missing or invalid, the runtime falls back to scanning `handlers/` directly, and if that directory doesn't exist either, to scanning the project root for backward compatibility with pre-`handlers/` deployments; set `BOXLANG_ENABLE_ROOT_SCAN=false` to disable that last-resort scan entirely and restrict routing to the default `Lambda.bx` handler only.
 
@@ -86,7 +98,7 @@ As with `Lambda.bx`, the `x-bx-function` header can call an alternative method o
 
 ## 🔧 Application Lifecycle
 
-Use `src/main/bx/Application.bx` for initialization and per-request hooks:
+Use `src/main/bx/Application.bx` for initialization and per-request hooks. It fires for every request, whether served by `Lambda.bx` or by a routed handler under `handlers/`:
 
 ```java
 class {
@@ -104,17 +116,41 @@ class {
 }
 ```
 
+## 📋 Handler Contract
+
+Every handler - `Lambda.bx` or anything under `handlers/` - implements `run( event, context, response )` (or an alternate method called via the `x-bx-function` header):
+
+```boxlang
+class{
+    function run( event, context, response ){
+        response.body = {
+            "error": false,
+            "messages": [],
+            "data": "Incoming event: " & event.toString()
+        }
+        response.statusCode = 200
+    }
+
+    // Call with header: x-bx-function: anotherLambda
+    function anotherLambda( event, context, response ){
+        return "Hola!!"
+    }
+}
+```
+
+- **`event`** - the event struct/map that triggered the Lambda (API Gateway, Function URL, ALB, or direct invocation)
+- **`context`** - the AWS Lambda context object (`com.amazonaws.services.lambda.runtime.Context`)
+- **`response`** - the struct returned to the caller, with a standard shape: `statusCode` (default `200`), `headers`, `body`, `cookies` (array), plus any other property you add
+
+You can either populate `response` or simply `return` a value - both are auto-serialized to JSON.
+
 ## 🛠️ Local Development
 
 ```bash
-# Run the tests
-./gradlew test
-
-# Test locally without deploying (default event)
-./gradlew runLocal
-
-# Test with an API Gateway event
-./gradlew runLocalApi
+./gradlew test           # run the test suite
+./gradlew runLocal        # test locally with the default event
+./gradlew runLocalApi     # test locally with an API Gateway event
+./gradlew runLocalLegacy  # test locally with a legacy API Gateway event
 ```
 
 For HTTP endpoint testing with [SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html) installed:
@@ -129,6 +165,45 @@ curl -H "x-bx-function: anotherLambda" http://localhost:3000
 Sample event payloads live in `workbench/sampleEvents/` (`api.json`, `api-post.json`, `s3-event.json`, etc.) - pass one with `-PeventFile=workbench/sampleEvents/s3-event.json`.
 
 Set `BOXLANG_LAMBDA_DEBUGMODE=true` to enable verbose logging and disable class caching, so `.bx` changes are picked up immediately.
+
+## 🧪 Testing
+
+```bash
+./gradlew test
+```
+
+Tests in `src/test/java/com/myproject/` exercise the full request pipeline using `LambdaRunner` directly with mock AWS Context objects - no live AWS environment required, so they run fast in CI. Test report: `build/reports/tests/test/index.html`.
+
+```java
+@Test
+@DisplayName( "Test Lambda.bx execution" )
+public void testValidLambda() throws IOException {
+    Path validPath = Path.of( "src", "main", "bx", "Lambda.bx" );
+    LambdaRunner runner = new LambdaRunner( validPath, true );
+    Context context = new TestContext();
+
+    var event = new HashMap<String, Object>();
+    event.put( "name", "Ortus Solutions" );
+
+    IStruct response = ( IStruct ) runner.handleRequest( event, context );
+
+    assertThat( response.getAsInteger( Key.of( "statusCode" ) ) ).isEqualTo( 200 );
+}
+```
+
+## 🔨 Build Tasks
+
+| Task | Description |
+|---|---|
+| `build` | Full build lifecycle (clean, compile, test, package) |
+| `test` | Run the JUnit test suite |
+| `generateManifest` | Scan `handlers/` and (re)generate `manifest.json` |
+| `shadowJar` | Create the uber-JAR with all dependencies |
+| `buildLambdaZip` | Package the Lambda deployment ZIP (`build/distributions/*.zip`) |
+| `runLocal` / `runLocalApi` / `runLocalLegacy` | Run the Lambda locally with a default / API Gateway / legacy API event |
+| `startSamServer` / `startSamServerBackground` | Start a local SAM HTTP API server (foreground / background) |
+| `stopSamServer` | Stop the background SAM server |
+| `spotlessApply` / `spotlessCheck` | Auto-format / check Java source formatting |
 
 ## ☁️ AWS Deployment
 
@@ -152,17 +227,29 @@ cp workbench/config.env workbench/config.local.env
 ./workbench/3-invoke.sh
 ```
 
-`config.local.env` is gitignored and layers over `config.env` → environment variables. Key settings: `AWS_LAMBDA_BUCKET` (required, globally unique), `STACK_NAME`, `LAMBDA_MEMORY`, `LAMBDA_TIMEOUT`, `AWS_REGION`.
+`config.local.env` is gitignored and layers over `config.env` → environment variables.
 
-The template also ships GitHub Actions workflows (`.github/workflows/`) for test, snapshot, and release builds - the AWS deployment step is commented out by default; uncomment it once your function exists and your `AWS_*` secrets are configured.
+| Variable | Default | Description |
+|---|---|---|
+| `AWS_LAMBDA_BUCKET` | *(required)* | S3 bucket for artifacts - must be globally unique |
+| `STACK_NAME` | `boxlang-lambda-stack` | CloudFormation stack name |
+| `FUNCTION_NAME` | `{STACK_NAME}-bxFunction-{SUFFIX}` | Direct function name for `3-invoke.sh` |
+| `LAMBDA_MEMORY` | `128` | Memory allocation in MB (128-10240) |
+| `LAMBDA_TIMEOUT` | `15` | Timeout in seconds (1-900) |
+| `AWS_REGION` | *your default* | AWS region for deployment |
+| `ENVIRONMENT` | `dev` | Deployment environment tag |
 
-## 🧪 Testing
+## 🤖 CI/CD Workflows
 
-```bash
-./gradlew test
-```
+`.github/workflows/` ships three ready-to-use pipelines:
 
-Tests in `src/test/java/com/myproject/` exercise the full request pipeline using `LambdaRunner` directly with mock AWS Context objects - no live AWS environment required, so they run fast in CI. Test report: `build/reports/tests/test/index.html`.
+| Workflow | Trigger | Purpose |
+|---|---|---|
+| `tests.yml` | Called by the other workflows | Reusable Java 21 test run with report artifacts |
+| `snapshot.yml` | Push to any non-`main` branch, PRs | Development builds with snapshot versioning |
+| `release.yml` | Push to `main`, manual dispatch | Full build, test, and package; optional AWS deployment (commented out by default) |
+
+To enable automatic AWS deployment on release: deploy your function once via the `workbench/` scripts, add `AWS_REGION`/`AWS_PUBLISHER_KEY_ID`/`AWS_SECRET_PUBLISHER_KEY` as GitHub Secrets, then uncomment the deployment step in `release.yml`.
 
 ## ⚙️ Configuration
 
@@ -178,7 +265,7 @@ Tests in `src/test/java/com/myproject/` exercise the full request pipeline using
 | `BOXLANG_LAMBDA_DEBUGMODE` | Verbose logging, disables class caching | `false` |
 | `BOXLANG_LAMBDA_CONFIG` | Path to a custom `boxlang.json` | `/var/task/boxlang.json` |
 | `BOXLANG_LAMBDA_CONNECTION_POOL_SIZE` | Database connection pool size | `2` |
-| `BOXLANG_ENABLE_ROOT_SCAN` | Allow the legacy root-directory scan fallback | `true` |
+| `BOXLANG_ENABLE_ROOT_SCAN` | Allow the legacy root-directory routing fallback (see URI Routing above) | `true`. Shared across every BoxLang serverless runtime (AWS/GCP/Azure). |
 | `LAMBDA_TASK_ROOT` | Lambda deployment root directory | `/var/task` |
 
 ## 📦 Adding BoxLang Modules
@@ -189,13 +276,6 @@ box install {moduleName} --production --directory=src/resources/boxlang_modules
 
 Or declare them in `box.json` under `dependencies`/`installPaths` and run `box install --production`. Modules are automatically packaged into your deployment ZIP under `boxlang_modules/`.
 
-## 📚 Additional Resources
-
-- **BoxLang AWS Lambda Runtime** - [boxlang-aws-lambda](https://github.com/ortus-boxlang/boxlang-aws-lambda)
-- **BoxLang Documentation** - [boxlang.ortusbooks.com](https://boxlang.ortusbooks.com)
-- **Google Cloud Functions Starter** - [boxlang-starter-google-functions](https://github.com/ortus-boxlang/boxlang-starter-google-functions)
-- **Azure Functions Starter** - [boxlang-starter-azure-functions](https://github.com/ortus-boxlang/boxlang-starter-azure-functions)
-
 ## 🐛 Troubleshooting
 
 | Problem | Solution |
@@ -205,6 +285,14 @@ Or declare them in `box.json` under `dependencies`/`installPaths` and run `box i
 | S3 bucket already exists | Choose a globally unique name in `config.local.env` |
 | Lambda timeout/memory errors in AWS | Increase `LAMBDA_TIMEOUT`/`LAMBDA_MEMORY` in `config.local.env` and redeploy |
 | Routing looks off after a deploy | Check your Lambda logs for a manifest `WARNING`; confirm `generateManifest` ran |
+| Large deployment package | Review dependencies in `build.gradle`; exclude unnecessary JARs |
+
+## 📚 Additional Resources
+
+- **BoxLang AWS Lambda Runtime** - [boxlang-aws-lambda](https://github.com/ortus-boxlang/boxlang-aws-lambda)
+- **BoxLang Documentation** - [boxlang.ortusbooks.com](https://boxlang.ortusbooks.com)
+- **Google Cloud Functions Starter** - [boxlang-starter-google-functions](https://github.com/ortus-boxlang/boxlang-starter-google-functions)
+- **Azure Functions Starter** - [boxlang-starter-azure-functions](https://github.com/ortus-boxlang/boxlang-starter-azure-functions)
 
 ## License
 
