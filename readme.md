@@ -394,7 +394,17 @@ externally callable.
 If `handlers/manifest.json` is ever missing or invalid, the runtime falls back to
 scanning `handlers/` directly at cold start and logs a `WARNING` listing every
 handler it registered - check your Lambda logs if routing behaves unexpectedly
-after a deploy that skipped `generateManifest`.
+after a deploy that skipped `generateManifest`. If neither `manifest.json` nor
+`handlers/` exists at all, the runtime falls back further to scanning the
+project root for backward compatibility with pre-`handlers/` deployments; set
+`BOXLANG_ENABLE_ROOT_SCAN=false` to disable that last-resort scan entirely and
+restrict routing to the default `Lambda.bx` handler only.
+
+`manifest.json`'s `reserved` and `defaultHandler` fields are enforced by the
+runtime, not just documentation - a manifest can never route to a reserved
+file (`Application.bx`, `Lambda.bx`, or anything else it lists), and
+`defaultHandler.file`/`method` is honored as the fallback handler for
+unmatched routes when present.
 
 ### 🔧 Application Lifecycle
 
