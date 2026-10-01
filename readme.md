@@ -116,6 +116,24 @@ class {
 }
 ```
 
+`run()`, `onRequestEnd` and `onError` all receive the same `response` struct as their last argument. A returned value is stored in `response.body` before `onRequestEnd` runs, so a hook can wrap it, and a handled error defaults to status `500` unless `onError` sets one:
+
+```js
+class {
+
+    function onRequestEnd( target, event, context, response ) {
+        response.body = { ok: true, data: response.body }
+    }
+
+    function onError( exception, eventName, event, context, response ) {
+        response.body = { ok: false, error: exception.message }
+    }
+
+}
+```
+
+Set `BOXLANG_RESPONSE_MODE=raw` to return only `response.body`, unwrapped, instead of the default `statusCode`/`headers`/`body`/`cookies` envelope. Use it for direct invocation or an API Gateway REST API without a proxy integration. If `Application.bx` defines `onError`, the error counts as handled; rethrow from the hook to fail the invocation.
+
 ## 📋 Handler Contract
 
 Every handler - `Lambda.bx` or anything under `handlers/` - implements `run( event, context, response )` (or an alternate method called via the `x-bx-function` header):
@@ -266,6 +284,7 @@ To enable automatic AWS deployment on release: deploy your function once via the
 | `BOXLANG_LAMBDA_CONFIG` | Path to a custom `boxlang.json` | `/var/task/boxlang.json` |
 | `BOXLANG_LAMBDA_CONNECTION_POOL_SIZE` | Database connection pool size | `2` |
 | `BOXLANG_ENABLE_ROOT_SCAN` | Allow the legacy root-directory routing fallback (see URI Routing above) | `true`. Shared across every BoxLang serverless runtime (AWS/GCP/Azure). |
+| `BOXLANG_RESPONSE_MODE` | What the Lambda returns: `http` returns the `statusCode`/`headers`/`body`/`cookies` envelope, `raw` returns only `response.body`, unwrapped. Any other value aborts cold start | `http` |
 | `LAMBDA_TASK_ROOT` | Lambda deployment root directory | `/var/task` |
 
 ## 📦 Adding BoxLang Modules
